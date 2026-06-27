@@ -1,5 +1,5 @@
 """
-UBits 自动签到脚本
+UBits 自动签到脚本（Cookie + UC 混合版）
 环境变量：
   UBITS_USERNAME      必填，用于浏览器登录
   UBITS_PASSWORD      必填
@@ -10,6 +10,8 @@ UBits 自动签到脚本
   UBITS_ClientID      可选，青龙面板 Client ID（用于自动更新环境变量）
   UBITS_ClientSecret  可选，青龙面板 Client Secret
 
+依赖安装:
+  pip install undetected-chromedriver pyotp requests selenium ddddocr curl-cffi
 
 cron: 0 8 * * *
 """
@@ -22,8 +24,6 @@ import shutil
 import json
 from datetime import datetime
 from typing import Optional, Tuple
-
-
 
 try:
     import undetected_chromedriver as uc
@@ -91,6 +91,7 @@ def send_notify(title: str, content: str):
     else:
         log(f"⚠️ notify.py 未导入，无法发送通知")
         log(f"[通知] {title}\n{content}")
+
 
 class QingLongAPI:
     """青龙面板 API 操作类"""
@@ -370,35 +371,50 @@ def parse_signin_result(html: str) -> Tuple[Optional[bool], str]:
     return None, ""
 
 
-def signin_with_cookie(cookie: str, ua: str, proxies: Optional[dict]) -> Tuple[bool, str]:
-    """使用 Cookie 快速签到"""
-    log("=== 阶段 1: Cookie 快速签到 ===")
+def check_signin_status(cookie: str, ua: str, proxies: Optional[dict]) -> Tuple[Optional[bool], str]:
+    """
+    检查签到状态（同时验证 Cookie 有效性）
+    返回: (状态, 消息)
+      - (True, msg): 已签到
+      - (False, msg): 未签到但 Cookie 有效
+      - (None, msg): Cookie 无效或请求失败
+    """
+    log("=== 验证 Cookie 并检查签到状态 ===")
+    log(f"访问首页 {SITE_URL}")
     
-    # 1. 检查首页是否已签到
-    log(f"检查首页 {SITE_URL}")
     index_res = fetch(SITE_URL, cookie, ua, proxies)
     
-    if index_res is not None and index_res.status_code == 200:
-        index_html = index_res.text or ""
-        
-        if under_challenge(index_html):
-            log("⚠️ Cookie 被 Cloudflare 拦截")
-            return False, "Cookie 被 Cloudflare 拦截"
-        
-        if is_cookie_invalid(str(index_res.url), index_html):
-            log("⚠️ Cookie 已失效")
-            return False, "Cookie 已失效"
-        
-        already, msg = check_already_signed(index_html)
-        if already:
-            log(f"✅ {msg}")
-            return True, msg
-    else:
-        log("⚠️ 首页检查失败")
-        return False, "首页请求失败"
+    if index_res is None:
+        return None, "首页请求失败"
     
-    # 2. 请求签到页
+    if index_res.status_code != 200:
+        return None, f"首页请求失败，状态码: {index_res.status_code}"
+    
+    index_html = index_res.text or ""
+    
+    if under_challenge(index_html):
+        return None, "Cloudflare 拦截"
+    
+    if is_cookie_invalid(str(index_res.url), index_html):
+        return None, "Cookie 已失效"
+    
+    # Cookie 有效，检查是否已签到
+    already, msg = check_already_signed(index_html)
+    if already:
+        log(f"✅ {msg}")
+        return True, msg
+    
+    log("📋 未检测到今日签到记录")
+    return False, "Cookie 有效，但未签到"
+
+
+def do_signin(cookie: str, ua: str, proxies: Optional[dict]) -> Tuple[bool, str]:
+    """
+    执行签到操作（假设 Cookie 已验证有效）
+    """
+    log("=== 执行签到 ===")
     log(f"请求签到页 {SIGNIN_URL}")
+    
     res = fetch(SIGNIN_URL, cookie, ua, proxies)
     
     if res is None:
@@ -410,7 +426,7 @@ def signin_with_cookie(cookie: str, ua: str, proxies: Optional[dict]) -> Tuple[b
     if res.status_code == 403:
         if under_challenge(html):
             return False, "签到页被 Cloudflare 拦截"
-        return False, f"签到失败，403"
+        return False, "签到失败，403"
     
     if res.status_code not in (200, 500):
         return False, f"签到失败，状态码：{res.status_code}"
@@ -419,7 +435,7 @@ def signin_with_cookie(cookie: str, ua: str, proxies: Optional[dict]) -> Tuple[b
         return False, "签到页被 Cloudflare 拦截"
     
     if is_cookie_invalid(str(res.url), html):
-        return False, "Cookie 已失效"
+        return False, "签到时 Cookie 失效"
     
     success, message = parse_signin_result(html)
     if success is not None:
@@ -707,7 +723,7 @@ def signin_with_uc(username: str, password: str, totp_secret: str) -> Tuple[bool
                 twofa_input.clear()
                 twofa_input.send_keys(twofa_code)
                 time.sleep(0.5)
-                
+
                 log("提交登录表单...")
                 submit_button = driver.find_element(By.CSS_SELECTOR, 'input[type="submit"][value="登录"]')
                 submit_button.click()
@@ -740,7 +756,7 @@ def signin_with_uc(username: str, password: str, totp_secret: str) -> Tuple[bool
             return False, "登录失败（3次尝试后仍失败）", None, None
         
         # 提取 Cookie 和 UA
-        log("提取 Cookie 和 UA...")
+        log("\n提取 Cookie 和 UA...")
         cookies = driver.get_cookies()
         cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         ua = driver.execute_script("return navigator.userAgent")
@@ -748,7 +764,29 @@ def signin_with_uc(username: str, password: str, totp_secret: str) -> Tuple[bool
         log(f"✅ 已提取 Cookie (长度: {len(cookie_str)})")
         log(f"✅ 已提取 UA: {ua[:80]}...")
         
-        # 访问签到页
+        # === 登录后先检查是否已签到 ===
+        log("\n=== 检查签到状态 ===")
+        log(f"访问首页 {SITE_URL}")
+        driver.get(SITE_URL)
+        time.sleep(3)
+        
+        if has_cloudflare_challenge(driver):
+            log("首页出现 Cloudflare")
+            if not handle_cloudflare_continuously(driver, max_attempts=10, interval=5):
+                return False, "首页 Cloudflare 验证失败", cookie_str, ua
+        
+        time.sleep(2)
+        index_html = driver.page_source
+        
+        # 检查是否已签到
+        already, msg = check_already_signed(index_html)
+        if already:
+            log(f"✅ {msg}")
+            return True, msg, cookie_str, ua
+        
+        log("📋 未检测到今日签到记录，准备签到")
+        
+        # === 执行签到 ===
         log(f"\n访问签到页 {SIGNIN_URL}")
         driver.get(SIGNIN_URL)
         time.sleep(5)
@@ -801,41 +839,66 @@ def main():
         return
     
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    
     log("开始 UBits 自动签到")
+    
     success = False
     message = ""
+    need_browser_login = False
     
-    # 策略 1: 如果有 Cookie，先尝试快速签到
+    # === 流程 1: 检查是否有 Cookie ===
     if cookie:
-        log("检测到已保存的 Cookie，尝试快速签到")
-        success, message = signin_with_cookie(cookie, ua, proxies)
+        log("检测到已保存的 Cookie")
         
-        if success:
-            log(f"✅ Cookie 签到成功: {message}")
+        # === 流程 1.1: 验证 Cookie 有效性并检查签到状态 ===
+        signin_status, status_msg = check_signin_status(cookie, ua, proxies)
+        
+        if signin_status is None:
+            # Cookie 无效
+            log(f"⚠️ Cookie 无效: {status_msg}")
+            need_browser_login = True
+        elif signin_status is True:
+            # 已签到
+            log(f"✅ {status_msg}")
+            success = True
+            message = status_msg
         else:
-            log(f"⚠️ Cookie 签到失败: {message}")
-            log("将切换到浏览器登录模式")
+            # Cookie 有效但未签到
+            log("✅ Cookie 有效，检测到未签到")
+            success, message = do_signin(cookie, ua, proxies)
+            
+            if success:
+                log(f"✅ 签到成功: {message}")
+            else:
+                log(f"⚠️ 签到失败: {message}")
+                # 签到失败可能是 Cookie 在签到时失效，需要重新登录
+                need_browser_login = True
     else:
-        log("未检测到 Cookie，使用浏览器登录")
+        log("未检测到 Cookie")
+        need_browser_login = True
     
-    # 策略 2: Cookie 失败或不存在，使用浏览器登录
-    if not success:
+    # === 流程 2: 需要浏览器登录 ===
+    if need_browser_login:
+        log("=== 启动浏览器登录流程 ===")
         success, message, new_cookie, new_ua = signin_with_uc(username, password, totp_secret)
         
-        # 如果登录成功且获取到新 Cookie，保存
+        # 无论签到成功或失败，只要获取到新 Cookie 就保存
         if new_cookie and new_ua:
             log("✅ 已获取新的 Cookie 和 UA")
             save_session(new_cookie, new_ua)
+        
+        if success:
+            log(f"✅ 浏览器登录并签到成功: {message}")
+        else:
+            log(f"❌ 浏览器登录或签到失败: {message}")
     
-    # 发送通知
+    # === 发送通知 ===
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status = "✅ 成功" if success else "❌ 失败"
-    log(f"{status}: {message}")
+    log(f"\n{status}: {message}")
     
     send_notify(
         "【UBits 自动签到】",
-        f"{status}\n结果: {message}\n时间: {now_str}"
+        f"{status}\n{message}\n时间: {now_str}"
     )
 
 
