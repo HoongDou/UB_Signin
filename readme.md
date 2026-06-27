@@ -30,13 +30,14 @@
 docker exec -it qinglong bash
 
 ##### 下载 ChromeDriver 149
+``` bash
 cd /tmp
 wget https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.196/linux64/chromedriver-linux64.zip
 unzip chromedriver-linux64.zip
 mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver-149
 chmod +x /usr/local/bin/chromedriver-149
 rm -rf chromedriver-linux64*
-
+```
 
 ## 部署
 
