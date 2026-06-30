@@ -322,7 +322,7 @@ def is_cookie_invalid(final_url: str, html: str) -> bool:
     """检测 Cookie 是否失效"""
     if "login.php" in final_url:
         return True
-    invalid_keywords = ["login.php", "takelogin.php", "登录", "登入", "用户名", "密码"]
+    invalid_keywords = ["login.php", "登录", "登入", "用户名", "密码"]
     logged_in_keywords = ["logout.php", "userdetails.php", "attendance.php", "签到", "控制面板"]
     return any(k in html for k in invalid_keywords) and not any(k in html for k in logged_in_keywords)
 
